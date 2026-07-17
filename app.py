@@ -443,6 +443,17 @@ if st.button("🚀 ΕΚΤΕΛΕΣΗ ΚΑΤΑΝΟΜΗΣ", type="primary", use_con
         st.warning("Πρώτα ανέβασε ένα Excel.")
     else:
         try:
+            # Καθαρισμός προηγούμενου επιτυχούς αποτελέσματος πριν από κάθε νέα εκτέλεση.
+            # Έτσι ένα αποτυχημένο/μη εφικτό test δεν εμφανίζει παλιό αρχείο στα Στατιστικά.
+            for _key in (
+                "last_final_path",
+                "last_step6_path",
+                "last_winning_sheet",
+                "last_winning_col",
+                "last_input_path",
+            ):
+                st.session_state.pop(_key, None)
+
             input_path = ROOT / _timestamped("INPUT_STEP1", ".xlsx")
             with open(input_path, "wb") as f:
                 f.write(up_all.getbuffer())
@@ -477,6 +488,7 @@ if st.button("🚀 ΕΚΤΕΛΕΣΗ ΚΑΤΑΝΟΜΗΣ", type="primary", use_con
                 else:
                     candidates = []
                     rejected_conflict_rows = []
+                    rejected_incomplete_rows = []
                     total_scenario_cols = 0
                     import random as _rnd
                     for sheet in sheet_names:
@@ -484,6 +496,41 @@ if st.button("🚀 ΕΚΤΕΛΕΣΗ ΚΑΤΑΝΟΜΗΣ", type="primary", use_con
                         scen_cols = [c for c in df_sheet.columns if re.match(r"^ΒΗΜΑ6_ΣΕΝΑΡΙΟ_\d+$", str(c))]
                         for col in scen_cols:
                             total_scenario_cols += 1
+
+                            # HARD CONSTRAINT ΠΛΗΡΟΤΗΤΑΣ:
+                            # Κανένα σενάριο δεν γίνεται υποψήφιο αν δεν έχουν τοποθετηθεί
+                            # όλοι οι μαθητές του αρχικού αρχείου σε έγκυρο τμήμα Α1, Α2, ...
+                            expected_names = {
+                                cg.canon_name(x)
+                                for x in df_input_full["ΟΝΟΜΑ"].astype(str).tolist()
+                                if cg.canon_name(x)
+                            }
+                            assigned_rows = df_sheet[
+                                df_sheet[col].notna()
+                                & df_sheet[col].astype(str).str.strip().str.match(r"^Α\d+$", na=False)
+                            ].copy()
+                            assigned_names = {
+                                cg.canon_name(x)
+                                for x in assigned_rows["ΟΝΟΜΑ"].astype(str).tolist()
+                                if cg.canon_name(x)
+                            }
+                            missing_names = sorted(expected_names - assigned_names)
+
+                            if missing_names or len(assigned_names) != len(expected_names):
+                                original_by_canon = {
+                                    cg.canon_name(x): str(x).strip()
+                                    for x in df_input_full["ΟΝΟΜΑ"].astype(str).tolist()
+                                }
+                                rejected_incomplete_rows.append({
+                                    "ΦΥΛΛΟ": sheet,
+                                    "ΣΕΝΑΡΙΟ": col,
+                                    "ΑΝΑΜΕΝΟΜΕΝΟΙ_ΜΑΘΗΤΕΣ": len(expected_names),
+                                    "ΤΟΠΟΘΕΤΗΜΕΝΟΙ_ΜΑΘΗΤΕΣ": len(assigned_names),
+                                    "ΜΗ_ΤΟΠΟΘΕΤΗΜΕΝΟΙ": ", ".join(
+                                        original_by_canon.get(n, n) for n in missing_names
+                                    ),
+                                })
+                                continue
 
                             # Hard constraint: κανένα τελικό υποψήφιο σενάριο με δηλωμένη σύγκρουση.
                             try:
@@ -508,6 +555,20 @@ if st.button("🚀 ΕΚΤΕΛΕΣΗ ΚΑΤΑΝΟΜΗΣ", type="primary", use_con
                             s["declared_conflict_violations"] = 0
                             candidates.append(s)
 
+                    if rejected_incomplete_rows:
+                        incomplete_df = pd.DataFrame(rejected_incomplete_rows)
+                        st.warning(
+                            f"⚠️ Απορρίφθηκαν "
+                            f"{incomplete_df[['ΦΥΛΛΟ','ΣΕΝΑΡΙΟ']].drop_duplicates().shape[0]} "
+                            f"από {total_scenario_cols} υποψήφια σενάρια επειδή "
+                            "δεν τοποθετήθηκαν όλοι οι μαθητές."
+                        )
+                        with st.expander(
+                            "📋 Audit ελλιπών σεναρίων — μη τοποθετημένοι μαθητές",
+                            expanded=True,
+                        ):
+                            st.dataframe(incomplete_df, use_container_width=True)
+
                     if rejected_conflict_rows:
                         rej_df = pd.DataFrame(rejected_conflict_rows)
                         st.warning(
@@ -518,10 +579,31 @@ if st.button("🚀 ΕΚΤΕΛΕΣΗ ΚΑΤΑΝΟΜΗΣ", type="primary", use_con
                             st.dataframe(rej_df, use_container_width=True)
 
                     if not candidates:
+                        # Απόλυτη ασφάλεια: αποτυχία σημαίνει ότι δεν υπάρχει τελικό αρχείο
+                        # και δεν πρέπει να εμφανιστεί παλιό αποτέλεσμα/Βήμα 8.
+                        for _key in (
+                            "last_final_path",
+                            "last_step6_path",
+                            "last_winning_sheet",
+                            "last_winning_col",
+                            "last_input_path",
+                        ):
+                            st.session_state.pop(_key, None)
+
                         if total_scenario_cols == 0:
-                            st.error("Δεν βρέθηκαν σενάρια Βήματος 6 σε κανένα φύλλο.")
+                            st.error("❌ Δεν βρέθηκαν σενάρια Βήματος 6 σε κανένα φύλλο.")
+                        elif rejected_incomplete_rows:
+                            st.error(
+                                "❌ ΜΗ ΕΦΙΚΤΗ ΚΑΤΑΝΟΜΗ: Δεν τοποθετήθηκαν όλοι οι μαθητές "
+                                "σε κανένα πλήρες και έγκυρο σενάριο. "
+                                "Δεν δημιουργήθηκε τελικό αποτέλεσμα."
+                            )
                         else:
-                            st.error("Δεν έμεινε κανένα έγκυρο σενάριο χωρίς δηλωμένες συγκρούσεις. Χρειάζεται ο έλεγχος να μπει νωρίτερα στα βήματα παραγωγής σεναρίων.")
+                            st.error(
+                                "❌ ΜΗ ΕΦΙΚΤΗ ΚΑΤΑΝΟΜΗ: Απορρίφθηκαν όλα τα υποψήφια "
+                                "σενάρια λόγω δηλωμένων συγκρούσεων. "
+                                "Δεν δημιουργήθηκε τελικό αποτέλεσμα."
+                            )
                     else:
                         pool_sorted = sorted(
                             candidates,
@@ -552,6 +634,29 @@ if st.button("🚀 ΕΚΤΕΛΕΣΗ ΚΑΤΑΝΟΜΗΣ", type="primary", use_con
                         final_out = ROOT / final_name_all
 
                         full_df = pd.read_excel(step6_path, sheet_name=winning_sheet).copy()
+
+                        # Τελική δεύτερη δικλείδα πριν γραφτεί οποιοδήποτε αρχείο.
+                        _expected = {
+                            cg.canon_name(x)
+                            for x in df_input_full["ΟΝΟΜΑ"].astype(str).tolist()
+                            if cg.canon_name(x)
+                        }
+                        _final_rows = full_df[
+                            full_df[winning_col].notna()
+                            & full_df[winning_col].astype(str).str.strip().str.match(r"^Α\d+$", na=False)
+                        ]
+                        _assigned = {
+                            cg.canon_name(x)
+                            for x in _final_rows["ΟΝΟΜΑ"].astype(str).tolist()
+                            if cg.canon_name(x)
+                        }
+                        if _assigned != _expected:
+                            _missing = sorted(_expected - _assigned)
+                            raise ValueError(
+                                "ΜΗ ΕΦΙΚΤΗ ΚΑΤΑΝΟΜΗ: Το επιλεγμένο σενάριο δεν περιλαμβάνει "
+                                f"όλους τους μαθητές. Μη τοποθετημένοι: {', '.join(_missing)}"
+                            )
+
                         with pd.ExcelWriter(final_out, engine="xlsxwriter") as w:
                             labels = sorted(
                                 [str(v) for v in full_df[winning_col].dropna().unique() if re.match(r"^Α\d+$", str(v))],
