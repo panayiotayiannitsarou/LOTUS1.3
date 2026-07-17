@@ -140,6 +140,10 @@ def _is_yes(x) -> bool:
 def _is_no(x) -> bool:
     return _norm_str(x) in NO_TOKENS
 
+def _behavior_weight(x) -> int:
+    """Εσωτερική διαβάθμιση ΖΩΗΡΟΣ: Ο=0, Ν1=1, Ν=2."""
+    return {"Ο": 0, "Ν1": 1, "Ν": 2}.get(_norm_str(x), 0)
+
 def _parse_friends_cell(x) -> List[str]:
     """Δέχεται λίστα ή string. Επιστρέφει λίστα ονομάτων (stripped)."""
     if isinstance(x, list):
@@ -226,11 +230,16 @@ def _pairwise_penalty(counts: Dict[str, int], free: int, weight: int) -> int:
                 penalty += (diff - free) * weight
     return penalty
 
-def _pair_conflict_penalty(aZ, aI, bZ, bI) -> int:
-    """Ποινή παιδαγωγικής σύγκρουσης ανά ζεύγος."""
-    if aI and bI: return 5
-    if (aI and bZ) or (bI and aZ): return 4
-    if aZ and bZ: return 3
+def _pair_conflict_penalty(aZ: int, aI: bool, bZ: int, bI: bool) -> int:
+    """Ποινή ανά ζεύγος με Ο=0, Ν1=1, Ν=2."""
+    if aI and bI:
+        return 5
+    if aI and bZ:
+        return 2 + bZ
+    if bI and aZ:
+        return 2 + aZ
+    if aZ and bZ:
+        return {(1, 1): 1, (1, 2): 2, (2, 1): 2, (2, 2): 3}[(aZ, bZ)]
     return 0
 
 def _class_conflict_sum(class_df: pd.DataFrame) -> int:
@@ -240,8 +249,8 @@ def _class_conflict_sum(class_df: pd.DataFrame) -> int:
     for i in range(len(rows)):
         for j in range(i+1, len(rows)):
             a = rows[i]; b = rows[j]
-            aZ = _is_yes(a.get('ΖΩΗΡΟΣ')); aI = _is_yes(a.get('ΙΔΙΑΙΤΕΡΟΤΗΤΑ'))
-            bZ = _is_yes(b.get('ΖΩΗΡΟΣ')); bI = _is_yes(b.get('ΙΔΙΑΙΤΕΡΟΤΗΤΑ'))
+            aZ = _behavior_weight(a.get('ΖΩΗΡΟΣ')); aI = _is_yes(a.get('ΙΔΙΑΙΤΕΡΟΤΗΤΑ'))
+            bZ = _behavior_weight(b.get('ΖΩΗΡΟΣ')); bI = _is_yes(b.get('ΙΔΙΑΙΤΕΡΟΤΗΤΑ'))
             s += _pair_conflict_penalty(aZ, aI, bZ, bI)
     return s
 

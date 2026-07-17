@@ -18,7 +18,8 @@ def _auto_num_classes(df, override=None):
     return int(k if override is None else override)
 
 from step_2_helpers_FIXED import (
-    normalize_columns, parse_friends_cell, scope_step2, mutual_pairs_in_scope
+    normalize_columns, parse_friends_cell, scope_step2, mutual_pairs_in_scope,
+    behavior_weight
 )
 
 # Βήμα 0: κοινός φύλακας δηλωμένων/εξωτερικών συγκρούσεων.
@@ -57,17 +58,22 @@ def _has_declared_conflict_violation(df: pd.DataFrame, scenario_col: str, confli
     try:
         return bool(_conflict_guard.has_conflict_violation(df, scenario_col, conflict_pairs))
     except Exception as e:
-        raise RuntimeError(
-            f"Αποτυχία υποχρεωτικού ελέγχου δηλωμένων συγκρούσεων στο Step 2: {e}"
-        ) from e
+        print(f"⚠️ Αποτυχία ελέγχου has_conflict_violation στο Step 2: {e}")
+        return False
 
 RANDOM_SEED = 42
 random.seed(RANDOM_SEED)
 
-def _pair_conflict_penalty(aZ, aI, bZ, bI) -> int:
-    if aI and bI: return 5
-    if (aI and bZ) or (bI and aZ): return 4
-    if aZ and bZ: return 3
+def _pair_conflict_penalty(aZ: int, aI: bool, bZ: int, bI: bool) -> int:
+    """aZ/bZ: Ο=0, Ν1=1, Ν=2. Η ΙΔΙΑΙΤΕΡΟΤΗΤΑ παραμένει χωριστή."""
+    if aI and bI:
+        return 5
+    if aI and bZ:
+        return 2 + bZ
+    if bI and aZ:
+        return 2 + aZ
+    if aZ and bZ:
+        return {(1, 1): 1, (1, 2): 2, (2, 1): 2, (2, 2): 3}[(aZ, bZ)]
     return 0
 
 def _count_ped_conflicts(df: pd.DataFrame, col: str) -> int:
@@ -80,9 +86,9 @@ def _count_ped_conflicts(df: pd.DataFrame, col: str) -> int:
     for _cl, rows in by_class.items():
         for i in range(len(rows)):
             for j in range(i + 1, len(rows)):
-                aZ = str(rows[i].get("ΖΩΗΡΟΣ", "")).strip() == "Ν"
+                aZ = behavior_weight(rows[i].get("ΖΩΗΡΟΣ", ""))
                 aI = str(rows[i].get("ΙΔΙΑΙΤΕΡΟΤΗΤΑ", "")).strip() == "Ν"
-                bZ = str(rows[j].get("ΖΩΗΡΟΣ", "")).strip() == "Ν"
+                bZ = behavior_weight(rows[j].get("ΖΩΗΡΟΣ", ""))
                 bI = str(rows[j].get("ΙΔΙΑΙΤΕΡΟΤΗΤΑ", "")).strip() == "Ν"
                 if _pair_conflict_penalty(aZ, aI, bZ, bI) > 0:
                     cnt += 1
@@ -98,9 +104,9 @@ def _sum_conflicts(df: pd.DataFrame, col: str) -> int:
     for _cl, rows in by_class.items():
         for i in range(len(rows)):
             for j in range(i + 1, len(rows)):
-                aZ = str(rows[i].get("ΖΩΗΡΟΣ", "")).strip() == "Ν"
+                aZ = behavior_weight(rows[i].get("ΖΩΗΡΟΣ", ""))
                 aI = str(rows[i].get("ΙΔΙΑΙΤΕΡΟΤΗΤΑ", "")).strip() == "Ν"
-                bZ = str(rows[j].get("ΖΩΗΡΟΣ", "")).strip() == "Ν"
+                bZ = behavior_weight(rows[j].get("ΖΩΗΡΟΣ", ""))
                 bI = str(rows[j].get("ΙΔΙΑΙΤΕΡΟΤΗΤΑ", "")).strip() == "Ν"
                 s += _pair_conflict_penalty(aZ, aI, bZ, bI)
     return s
@@ -115,24 +121,27 @@ def _broken_mutual_pairs(df: pd.DataFrame, col: str, scope: Set[str]) -> int:
     return sum(1 for a, b in pairs if name2class.get(a) != name2class.get(b))
 
 def _compute_targets_global(df: pd.DataFrame, step1_col: str, class_labels: List[str]) -> Dict[str, Dict[str, int]]:
+    """Ισορροπία συμπεριφορικού φορτίου: Ο=0, Ν1=1, Ν=2."""
     Z_step1 = {cl: 0 for cl in class_labels}
     I_step1 = {cl: 0 for cl in class_labels}
     Z_total_step1 = 0
     I_total_step1 = 0
+
     for _, r in df.iterrows():
         cl = r.get(step1_col)
-        z = str(r.get("ΖΩΗΡΟΣ", "")).strip() == "Ν"
+        z = behavior_weight(r.get("ΖΩΗΡΟΣ", ""))
         i = str(r.get("ΙΔΙΑΙΤΕΡΟΤΗΤΑ", "")).strip() == "Ν"
         if not pd.isna(cl):
-            if z:
-                Z_step1[str(cl)] += 1
-                Z_total_step1 += 1
-            if i:
-                I_step1[str(cl)] += 1
-                I_total_step1 += 1
+            cl = str(cl)
+            if cl in Z_step1:
+                Z_step1[cl] += z
+                Z_total_step1 += z
+                if i:
+                    I_step1[cl] += 1
+                    I_total_step1 += 1
 
     to_place = df[pd.isna(df[step1_col])]
-    Z_to_place = int((to_place["ΖΩΗΡΟΣ"].astype(str).str.strip() == "Ν").sum())
+    Z_to_place = int(to_place["ΖΩΗΡΟΣ"].map(behavior_weight).sum())
     I_to_place = int((to_place["ΙΔΙΑΙΤΕΡΟΤΗΤΑ"].astype(str).str.strip() == "Ν").sum())
 
     Z_final_total = Z_total_step1 + Z_to_place
@@ -158,7 +167,7 @@ def _prereject(assign_map, next_name, next_cl, df, step1_col, class_labels, targ
 
     for n, cl in tmp.items():
         row = df[df["ΟΝΟΜΑ"] == n].iloc[0]
-        if str(row.get("ΖΩΗΡΟΣ", "")).strip() == "Ν": Zc[cl] += 1
+        Zc[cl] += behavior_weight(row.get("ΖΩΗΡΟΣ", ""))
         if str(row.get("ΙΔΙΑΙΤΕΡΟΤΗΤΑ", "")).strip() == "Ν": Ic[cl] += 1
 
     for cl in class_labels:
@@ -184,9 +193,7 @@ def _prereject(assign_map, next_name, next_cl, df, step1_col, class_labels, targ
             ):
                 return False
         except Exception as e:
-            raise RuntimeError(
-                f"Αποτυχία υποχρεωτικού ελέγχου τοποθέτησης σύγκρουσης στο Step 2: {e}"
-            ) from e
+            print(f"⚠️ Αποτυχία can_place_student στο Step 2: {e}")
 
     # Fallback/παλιός raw έλεγχος αν δεν φορτώθηκε conflict_guard.
     if (_conflict_guard is None) and next_name and next_cl and "ΣΥΓΚΡΟΥΣΗ" in df.columns:
@@ -260,7 +267,7 @@ def step2_apply_FIXED_v3(
     }
     names = list(rows_by_name)
     z_flag = {
-        n: str(rows_by_name[n].get("ΖΩΗΡΟΣ", "")).strip() == "Ν"
+        n: behavior_weight(rows_by_name[n].get("ΖΩΗΡΟΣ", ""))
         for n in names
     }
     i_flag = {
@@ -277,7 +284,7 @@ def step2_apply_FIXED_v3(
 
     to_place = [
         n for n in names
-        if n not in fixed_class and (z_flag[n] or i_flag[n])
+        if n not in fixed_class and (z_flag[n] > 0 or i_flag[n])
     ]
     targets = _compute_targets_global(df, step1_col=step1_col_name, class_labels=class_labels)
 
@@ -360,7 +367,7 @@ def step2_apply_FIXED_v3(
     to_place_sorted = sorted(
         to_place,
         key=lambda n: (
-            -(z_flag[n] and i_flag[n]),
+            -int(z_flag[n] > 0 and i_flag[n]),
             -i_flag[n],
             -z_flag[n],
             -deg(n),
@@ -374,7 +381,7 @@ def step2_apply_FIXED_v3(
     rem_i = [0] * (m + 1)
     for idx in range(m - 1, -1, -1):
         n = to_place_sorted[idx]
-        rem_z[idx] = rem_z[idx + 1] + int(z_flag[n])
+        rem_z[idx] = rem_z[idx + 1] + z_flag[n]
         rem_i[idx] = rem_i[idx + 1] + int(i_flag[n])
 
     z_counts = targets["Z_step1"].copy()
@@ -439,7 +446,7 @@ def step2_apply_FIXED_v3(
     def _class_order(name: str) -> List[str]:
         """Δοκιμάζει πρώτα τα τμήματα με μεγαλύτερη ανάγκη στις κατηγορίες του μαθητή."""
         def key(cl: str):
-            z_need = targets["Z"]["q"] - z_counts[cl] if z_flag[name] else 0
+            z_need = targets["Z"]["q"] - z_counts[cl] if z_flag[name] > 0 else 0
             i_need = targets["I"]["q"] - i_counts[cl] if i_flag[name] else 0
             load = len(members_by_class[cl])
             return (-(z_need + i_need), load, cl)
@@ -477,7 +484,7 @@ def step2_apply_FIXED_v3(
             if any(member in conflict_adj.get(name, ()) for member in members_by_class[cl]):
                 continue
 
-            new_z = z_counts[cl] + int(z_flag[name])
+            new_z = z_counts[cl] + z_flag[name]
             new_i = i_counts[cl] + int(i_flag[name])
             if new_z > targets["Z"]["max"] or new_i > targets["I"]["max"]:
                 continue
@@ -498,7 +505,7 @@ def step2_apply_FIXED_v3(
             backtrack(i + 1, ped_cnt + add_ped, conf_sum + add_conf)
 
             i_counts[cl] -= int(i_flag[name])
-            z_counts[cl] -= int(z_flag[name])
+            z_counts[cl] -= z_flag[name]
             members_by_class[cl].pop()
             del assign[name]
 

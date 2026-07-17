@@ -164,6 +164,10 @@ GIRL = "Κ"          # Κορίτσι
 GOOD = "Ν"          # Καλή Γνώση/Ζωηρότητα/Ιδιαιτερότητα/Παιδί Εκπαιδευτικού
 NOTGOOD = "Ο"       # Όχι Καλή
 
+def _behavior_positive(x: Any) -> bool:
+    """Στα προστατευμένα πλήθη, Ν1 και Ν μετρούν μαζί ως θετική ένδειξη."""
+    return str(x).strip().upper() in {"Ν1", "Ν"}
+
 MAX_PER_CLASS = 25
 TARGET_POP_DIFF = 2
 TARGET_GENDER_DIFF = 3

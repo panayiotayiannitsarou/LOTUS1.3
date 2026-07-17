@@ -256,101 +256,6 @@ def _restart_app():
         pass
     st.rerun()
 
-def _clear_distribution_state() -> None:
-    """Καθαρίζει όλα τα αποθηκευμένα αποτελέσματα προηγούμενης κατανομής."""
-    for key in [
-        "last_final_path",
-        "last_step6_path",
-        "last_winning_sheet",
-        "last_winning_col",
-        "last_input_path",
-    ]:
-        st.session_state.pop(key, None)
-
-
-def _canonical_student_name(value) -> str:
-    """Κανονικοποίηση ονόματος για έλεγχο πληρότητας."""
-    if value is None:
-        return ""
-    try:
-        if pd.isna(value):
-            return ""
-    except Exception:
-        pass
-    value = unicodedata.normalize("NFD", str(value).strip())
-    value = "".join(ch for ch in value if not unicodedata.combining(ch))
-    return re.sub(r"\s+", " ", value).upper()
-
-
-def _assignment_completeness(input_df: pd.DataFrame, result_df: pd.DataFrame, scenario_col: str) -> dict:
-    """Ελέγχει ότι όλοι οι μαθητές τοποθετήθηκαν ακριβώς μία φορά."""
-    if "ΟΝΟΜΑ" not in input_df.columns:
-        raise ValueError("Λείπει η στήλη ΟΝΟΜΑ από το αρχικό αρχείο.")
-    if "ΟΝΟΜΑ" not in result_df.columns:
-        raise ValueError("Λείπει η στήλη ΟΝΟΜΑ από το αποτέλεσμα.")
-    if scenario_col not in result_df.columns:
-        raise ValueError(f"Λείπει η στήλη σεναρίου {scenario_col}.")
-
-    input_names = [
-        _canonical_student_name(x)
-        for x in input_df["ΟΝΟΜΑ"].tolist()
-        if _canonical_student_name(x)
-    ]
-    assigned = result_df.loc[
-        result_df[scenario_col].notna()
-        & result_df[scenario_col].astype(str).str.strip().ne(""),
-        ["ΟΝΟΜΑ", scenario_col],
-    ]
-    assigned_names = [
-        _canonical_student_name(x)
-        for x in assigned["ΟΝΟΜΑ"].tolist()
-        if _canonical_student_name(x)
-    ]
-
-    input_set = set(input_names)
-    assigned_set = set(assigned_names)
-    original_by_canon = {}
-    for raw in input_df["ΟΝΟΜΑ"].tolist():
-        canon = _canonical_student_name(raw)
-        if canon:
-            original_by_canon.setdefault(canon, str(raw).strip())
-
-    duplicate_canons = sorted({
-        name for name in assigned_names if assigned_names.count(name) > 1
-    })
-
-    return {
-        "is_complete": (
-            len(input_names) == len(assigned_names)
-            and input_set == assigned_set
-            and not duplicate_canons
-        ),
-        "expected_count": len(input_names),
-        "assigned_count": len(assigned_names),
-        "missing": [
-            original_by_canon.get(x, x)
-            for x in sorted(input_set - assigned_set)
-        ],
-        "unexpected": sorted(assigned_set - input_set),
-        "duplicates": duplicate_canons,
-    }
-
-
-def _collect_names_from_class_workbook(workbook_path: str) -> list[str]:
-    """Συλλέγει ονόματα από τα φύλλα Α1, Α2, ... ενός τελικού workbook."""
-    xls = pd.ExcelFile(workbook_path)
-    names = []
-    for sheet_name in xls.sheet_names:
-        if not re.match(r"^Α\d+$", str(sheet_name)):
-            continue
-        df_sheet = pd.read_excel(workbook_path, sheet_name=sheet_name)
-        if "ΟΝΟΜΑ" in df_sheet.columns:
-            names.extend(
-                df_sheet["ΟΝΟΜΑ"].dropna().astype(str).str.strip().tolist()
-            )
-    return names
-
-
 def _terms_md():
     return """
 **Υποχρεωτική Αποδοχή Όρων Χρήσης**  
@@ -580,22 +485,6 @@ if st.button("🚀 ΕΚΤΕΛΕΣΗ ΚΑΤΑΝΟΜΗΣ", type="primary", use_con
                         for col in scen_cols:
                             total_scenario_cols += 1
 
-                            completeness = _assignment_completeness(
-                                df_input_full, df_sheet, col
-                            )
-                            if not completeness["is_complete"]:
-                                rejected_conflict_rows.append({
-                                    "ΦΥΛΛΟ": sheet,
-                                    "ΣΕΝΑΡΙΟ": col,
-                                    "ΜΑΘΗΤΗΣ_A": ", ".join(completeness["missing"]),
-                                    "ΜΑΘΗΤΗΣ_B": "",
-                                    "ΤΜΗΜΑ": (
-                                        f"ΜΗ ΠΛΗΡΕΣ: {completeness['assigned_count']}/"
-                                        f"{completeness['expected_count']}"
-                                    ),
-                                })
-                                continue
-
                             # Hard constraint: κανένα τελικό υποψήφιο σενάριο με δηλωμένη σύγκρουση.
                             try:
                                 viol = cg.list_conflict_violations(df_sheet, col, conflict_pairs=conflict_pairs)
@@ -629,16 +518,10 @@ if st.button("🚀 ΕΚΤΕΛΕΣΗ ΚΑΤΑΝΟΜΗΣ", type="primary", use_con
                             st.dataframe(rej_df, use_container_width=True)
 
                     if not candidates:
-                        _clear_distribution_state()
                         if total_scenario_cols == 0:
                             st.error("Δεν βρέθηκαν σενάρια Βήματος 6 σε κανένα φύλλο.")
                         else:
-                            st.error(
-                                "Δεν βρέθηκε έγκυρη κατανομή που να ικανοποιεί όλους τους "
-                                "δηλωμένους περιορισμούς μη συνύπαρξης. Δεν διατηρήθηκε "
-                                "κανένα αποτέλεσμα προηγούμενης εκτέλεσης."
-                            )
-                        st.stop()
+                            st.error("Δεν έμεινε κανένα έγκυρο σενάριο χωρίς δηλωμένες συγκρούσεις. Χρειάζεται ο έλεγχος να μπει νωρίτερα στα βήματα παραγωγής σεναρίων.")
                     else:
                         pool_sorted = sorted(
                             candidates,
@@ -669,22 +552,6 @@ if st.button("🚀 ΕΚΤΕΛΕΣΗ ΚΑΤΑΝΟΜΗΣ", type="primary", use_con
                         final_out = ROOT / final_name_all
 
                         full_df = pd.read_excel(step6_path, sheet_name=winning_sheet).copy()
-
-                        final_completeness = _assignment_completeness(
-                            df_input_full, full_df, winning_col
-                        )
-                        if not final_completeness["is_complete"]:
-                            _clear_distribution_state()
-                            missing_text = ", ".join(final_completeness["missing"]) or "—"
-                            st.error(
-                                "ΜΗ ΕΦΙΚΤΗ ΚΑΤΑΝΟΜΗ: το επιλεγμένο σενάριο δεν είναι πλήρες. "
-                                f"Τοποθετήθηκαν {final_completeness['assigned_count']} από "
-                                f"{final_completeness['expected_count']} μαθητές. "
-                                f"Ατοποθέτητοι: {missing_text}. "
-                                "Δεν δημιουργήθηκε τελικό αρχείο και δεν θα εκτελεστεί το Βήμα 8."
-                            )
-                            st.stop()
-
                         with pd.ExcelWriter(final_out, engine="xlsxwriter") as w:
                             labels = sorted(
                                 [str(v) for v in full_df[winning_col].dropna().unique() if re.match(r"^Α\d+$", str(v))],
@@ -831,74 +698,51 @@ if xl is not None:
         return None
 
     def compute_conflict_counts_and_names(df: pd.DataFrame):
-        """Μετρά πραγματικές παραβιάσεις δηλωμένων συγκρούσεων ανά μαθητή.
-
-        Κάθε δήλωση σύγκρουσης αντιμετωπίζεται ως αμφίδρομο hard constraint,
-        ακόμη και αν έχει καταχωριστεί μόνο στη γραμμή του ενός μαθητή.
-        """
         if "ΟΝΟΜΑ" not in df.columns or "ΤΜΗΜΑ" not in df.columns:
-            return pd.Series(0, index=df.index, dtype=int), pd.Series("", index=df.index, dtype=str)
+            return pd.Series([0]*len(df), index=df.index), pd.Series([""]*len(df), index=df.index)
         if "ΣΥΓΚΡΟΥΣΗ" not in df.columns:
-            return pd.Series(0, index=df.index, dtype=int), pd.Series("", index=df.index, dtype=str)
-
-        work = df.copy()
-        work["__C"] = work["ΟΝΟΜΑ"].map(_canon_name)
-        work["__CLASS"] = work["ΤΜΗΜΑ"].astype(str).str.strip()
-        canon_names = list(work["__C"].dropna().astype(str).unique())
-        original_by_canon = dict(zip(work["__C"], work["ΟΝΟΜΑ"].astype(str)))
-        class_by_canon = dict(zip(work["__C"], work["__CLASS"]))
-
+            return pd.Series([0]*len(df), index=df.index), pd.Series([""]*len(df), index=df.index)
+        df = df.copy()
+        df["__C"] = df["ΟΝΟΜΑ"].map(_canon_name)
+        cls = df["ΤΜΗΜΑ"].astype(str).str.strip()
+        canon_names = list(df["__C"].astype(str).unique())
+        index_by = {cn: i for i, cn in enumerate(df["__C"])}
         def parse_targets(cell):
-            if cell is None or (isinstance(cell, float) and pd.isna(cell)):
-                return []
-            raw = str(cell).strip()
-            if not raw or raw.lower() in {"nan", "none", "null", "-"}:
-                return []
-            parts = [p.strip() for p in re.split(r"[,;/|·\n]+", raw) if p.strip()]
+            raw = str(cell) if cell is not None else ""
+            parts = [p.strip() for p in re.split(r"[;,/|\n]", raw) if p.strip()]
             return [_canon_name(p) for p in parts]
-
-        conflict_pairs = set()
-        for _, row in work.iterrows():
-            a = row["__C"]
-            for target in parse_targets(row.get("ΣΥΓΚΡΟΥΣΗ", "")):
-                b = target if target in canon_names else _best_name_match(target, canon_names)
-                if b and a and a != b:
-                    conflict_pairs.add(tuple(sorted((a, b))))
-
-        violated_by_student = {cn: set() for cn in canon_names}
-        for a, b in conflict_pairs:
-            ca, cb = class_by_canon.get(a, ""), class_by_canon.get(b, "")
-            if ca and cb and ca == cb and ca.lower() != "nan":
-                violated_by_student.setdefault(a, set()).add(b)
-                violated_by_student.setdefault(b, set()).add(a)
-
-        counts = []
-        names = []
-        for _, row in work.iterrows():
-            cn = row["__C"]
-            others = sorted(violated_by_student.get(cn, set()))
-            counts.append(len(others))
-            names.append(", ".join(original_by_canon.get(x, x) for x in others))
-
-        return pd.Series(counts, index=work.index, dtype=int), pd.Series(names, index=work.index, dtype=str)
+        counts = [0]*len(df); names = [""]*len(df)
+        for i, row in df.iterrows():
+            my_class = cls.iloc[i]
+            targets = parse_targets(row.get("ΣΥΓΚΡΟΥΣΗ",""))
+            same = []
+            for t in targets:
+                j = index_by.get(t)
+                if j is None:
+                    match = _best_name_match(t, canon_names)
+                    j = index_by.get(match) if match else None
+                if j is not None and cls.iloc[j] == my_class and df.loc[i, "__C"] != df.loc[j, "__C"]:
+                    same.append(df.loc[j, "ΟΝΟΜΑ"])
+            counts[i] = len(same)
+            names[i] = ", ".join(same)
+        return pd.Series(counts, index=df.index), pd.Series(names, index=df.index)
 
     def list_broken_mutual_pairs(df: pd.DataFrame) -> pd.DataFrame:
         fcol = next((c for c in ["ΦΙΛΟΙ","ΦΙΛΟΣ","ΦΙΛΙΑ"] if c in df.columns), None)
         if fcol is None or "ΟΝΟΜΑ" not in df.columns or "ΤΜΗΜΑ" not in df.columns:
             return pd.DataFrame(columns=["A","A_ΤΜΗΜΑ","B","B_ΤΜΗΜΑ"])
-        df = df.copy().reset_index(drop=True)
+        df = df.copy()
         df["__C"] = df["ΟΝΟΜΑ"].map(_canon_name)
         name_to_original = dict(zip(df["__C"], df["ΟΝΟΜΑ"].astype(str)))
         class_by_name = dict(zip(df["__C"], df["ΤΜΗΜΑ"].astype(str).str.strip()))
         canon_names = list(df["__C"].astype(str).unique())
         def parse_list(cell):
             raw = str(cell) if cell is not None else ""
-            parts = [p.strip() for p in re.split(r"[,;/|·\n]+", raw) if p.strip()]
+            parts = [p.strip() for p in re.split(r"[;,/|\n]", raw) if p.strip()]
             return [_canon_name(p) for p in parts]
         friends_map = {}
-        for _, row in df.iterrows():
-            cn = row["__C"]
-            raw_targets = parse_list(row.get(fcol, ""))
+        for i, cn in enumerate(df["__C"]):
+            raw_targets = parse_list(df.loc[i, fcol])
             resolved = []
             for t in raw_targets:
                 if t in canon_names:
@@ -926,7 +770,12 @@ if xl is not None:
         boys = df[df.get("ΦΥΛΟ","").astype(str).str.upper().eq("Α")].groupby("ΤΜΗΜΑ").size() if "ΦΥΛΟ" in df else pd.Series(dtype=int)
         girls = df[df.get("ΦΥΛΟ","").astype(str).str.upper().eq("Κ")].groupby("ΤΜΗΜΑ").size() if "ΦΥΛΟ" in df else pd.Series(dtype=int)
         edus = df[df.get("ΠΑΙΔΙ_ΕΚΠΑΙΔΕΥΤΙΚΟΥ","").astype(str).str.upper().eq("Ν")].groupby("ΤΜΗΜΑ").size() if "ΠΑΙΔΙ_ΕΚΠΑΙΔΕΥΤΙΚΟΥ" in df else pd.Series(dtype=int)
-        z = df[df.get("ΖΩΗΡΟΣ","").astype(str).str.upper().eq("Ν")].groupby("ΤΜΗΜΑ").size() if "ΖΩΗΡΟΣ" in df else pd.Series(dtype=int)
+        # Ν1 και Ν εμφανίζονται μαζί στα στατιστικά ως θετικές συμπεριφορικές ενδείξεις.
+        z = (
+            df[df["ΖΩΗΡΟΣ"].astype(str).str.strip().str.upper().isin(["Ν1", "Ν"])]
+            .groupby("ΤΜΗΜΑ").size()
+            if "ΖΩΗΡΟΣ" in df else pd.Series(dtype=int)
+        )
         id_ = df[df.get("ΙΔΙΑΙΤΕΡΟΤΗΤΑ","").astype(str).str.upper().eq("Ν")].groupby("ΤΜΗΜΑ").size() if "ΙΔΙΑΙΤΕΡΟΤΗΤΑ" in df else pd.Series(dtype=int)
         g = df[df.get("ΚΑΛΗ_ΓΝΩΣΗ_ΕΛΛΗΝΙΚΩΝ","").astype(str).str.upper().eq("Ν")].groupby("ΤΜΗΜΑ").size() if "ΚΑΛΗ_ΓΝΩΣΗ_ΕΛΛΗΝΙΚΩΝ" in df else pd.Series(dtype=int)
         total = df.groupby("ΤΜΗΜΑ").size() if "ΤΜΗΜΑ" in df else pd.Series(dtype=int)
@@ -989,75 +838,60 @@ if xl is not None:
     ])
 
     with tab1:
-        try:
-            st.subheader("📈 Υπολογισμός Στατιστικών για Επιλεγμένο Sheet")
-            st.selectbox("Διάλεξε sheet", ["FINAL_SCENARIO"], key="sheet_choice", index=0)
-            with st.expander("🔎 Διάγνωση/Μετονομασίες", expanded=False):
-                st.write("Αυτόματες μετονομασίες:", rename_map if rename_map else "—")
-                required_cols = ["ΟΝΟΜΑ","ΦΥΛΟ","ΠΑΙΔΙ_ΕΚΠΑΙΔΕΥΤΙΚΟΥ","ΖΩΗΡΟΣ","ΙΔΙΑΙΤΕΡΟΤΗΤΑ","ΚΑΛΗ_ΓΝΩΣΗ_ΕΛΛΗΝΙΚΩΝ","ΦΙΛΟΙ","ΣΥΓΚΡΟΥΣΗ",]
-                missing_cols = [c for c in required_cols if c not in used_df.columns]
-                st.write("Λείπουν στήλες:", missing_cols if missing_cols else "—")
-            if missing_cols:
-                st.info("Συμπλήρωσε/διόρθωσε τις στήλες που λείπουν στο Excel και ξαναφόρτωσέ το.")
-            stats_df = generate_stats(used_df)
-            stats_display = stats_df[[
-                "ΠΑΙΔΙ_ΕΚΠΑΙΔΕΥΤΙΚΟΥ",
-                "ΖΩΗΡΟΙ",
-                "ΙΔΙΑΙΤΕΡΟΤΗΤΑ",
-                "ΣΥΓΚΡΟΥΣΗ",
-                "ΣΠΑΣΜΕΝΗ ΦΙΛΙΑ",
-            ]]
-            st.dataframe(stats_display, use_container_width=True)
+        st.subheader("📈 Υπολογισμός Στατιστικών για Επιλεγμένο Sheet")
+        st.selectbox("Διάλεξε sheet", ["FINAL_SCENARIO"], key="sheet_choice", index=0)
+        with st.expander("🔎 Διάγνωση/Μετονομασίες", expanded=False):
+            st.write("Αυτόματες μετονομασίες:", rename_map if rename_map else "—")
+            required_cols = ["ΟΝΟΜΑ","ΦΥΛΟ","ΠΑΙΔΙ_ΕΚΠΑΙΔΕΥΤΙΚΟΥ","ΖΩΗΡΟΣ","ΙΔΙΑΙΤΕΡΟΤΗΤΑ","ΚΑΛΗ_ΓΝΩΣΗ_ΕΛΛΗΝΙΚΩΝ","ΦΙΛΟΙ","ΣΥΓΚΡΟΥΣΗ",]
+            missing_cols = [c for c in required_cols if c not in used_df.columns]
+            st.write("Λείπουν στήλες:", missing_cols if missing_cols else "—")
+        if missing_cols:
+            st.info("Συμπλήρωσε/διόρθωσε τις στήλες που λείπουν στο Excel και ξαναφόρτωσέ το.")
+        stats_df = generate_stats(used_df)
+        stats_display = stats_df[[
+            "ΠΑΙΔΙ_ΕΚΠΑΙΔΕΥΤΙΚΟΥ",
+            "ΖΩΗΡΟΙ",
+            "ΙΔΙΑΙΤΕΡΟΤΗΤΑ",
+            "ΣΥΓΚΡΟΥΣΗ",
+            "ΣΠΑΣΜΕΝΗ ΦΙΛΙΑ",
+        ]]
+        st.dataframe(stats_display, use_container_width=True)
 
-            if SHOW_STATS_EXPORT_BUTTON:
-                st.download_button(
-                    "📥 Εξαγωγή ΜΟΝΟ Στατιστικών (Excel)",
-                    data=export_stats_to_excel(stats_df).getvalue(),
-                    file_name=f"statistika_STEP7_FINAL_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    type="primary"
-                )
-
-        except Exception as e:
-            traceback.print_exc()
-            _show_distribution_error(e)
+        if SHOW_STATS_EXPORT_BUTTON:
+            st.download_button(
+                "📥 Εξαγωγή ΜΟΝΟ Στατιστικών (Excel)",
+                data=export_stats_to_excel(stats_df).getvalue(),
+                file_name=f"statistika_STEP7_FINAL_{dt.datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary"
+            )
 
     with tab2:
-        try:
-            st.subheader("💔 Σπασμένες αμοιβαίες φιλίες")
-            pairs = list_broken_mutual_pairs(used_df)
-            if pairs.empty:
-                st.success("Δεν βρέθηκαν σπασμένες αμοιβαίες φιλίες.")
-            else:
-                st.dataframe(pairs, use_container_width=True)
-                counts = {}
-                for _, row in pairs.iterrows():
-                    counts[row["A_ΤΜΗΜΑ"]] = counts.get(row["A_ΤΜΗΜΑ"], 0) + 1
-                    counts[row["B_ΤΜΗΜΑ"]] = counts.get(row["B_ΤΜΗΜΑ"], 0) + 1
-                summary = pd.DataFrame.from_dict(counts, orient="index", columns=["Σπασμένες Αμοιβαίες"]).sort_index()
-                st.write("Σύνοψη ανά τμήμα:")
-                st.dataframe(summary, use_container_width=True)
-
-        except Exception as e:
-            traceback.print_exc()
-            _show_distribution_error(e)
+        st.subheader("💔 Σπασμένες αμοιβαίες φιλίες")
+        pairs = list_broken_mutual_pairs(used_df)
+        if pairs.empty:
+            st.success("Δεν βρέθηκαν σπασμένες αμοιβαίες φιλίες.")
+        else:
+            st.dataframe(pairs, use_container_width=True)
+            counts = {}
+            for _, row in pairs.iterrows():
+                counts[row["A_ΤΜΗΜΑ"]] = counts.get(row["A_ΤΜΗΜΑ"], 0) + 1
+                counts[row["B_ΤΜΗΜΑ"]] = counts.get(row["B_ΤΜΗΜΑ"], 0) + 1
+            summary = pd.DataFrame.from_dict(counts, orient="index", columns=["Σπασμένες Αμοιβαίες"]).sort_index()
+            st.write("Σύνοψη ανά τμήμα:")
+            st.dataframe(summary, use_container_width=True)
 
     with tab3:
-        try:
-            st.subheader("⚠️ Μαθητές με σύγκρουση στην ίδια τάξη")
-            counts, names = compute_conflict_counts_and_names(used_df)
-            conflict_students = used_df.copy()
-            conflict_students["ΣΥΓΚΡΟΥΣΗ_ΠΛΗΘΟΣ"] = counts.astype(int)
-            conflict_students["ΣΥΓΚΡΟΥΣΗ_ΟΝΟΜΑ"] = names
-            conflict_students = conflict_students.loc[conflict_students["ΣΥΓΚΡΟΥΣΗ_ΠΛΗΘΟΣ"] > 0, ["ΟΝΟΜΑ","ΤΜΗΜΑ","ΣΥΓΚΡΟΥΣΗ_ΠΛΗΘΟΣ","ΣΥΓΚΡΟΥΣΗ_ΟΝΟΜΑ"]]
-            if conflict_students.empty:
-                st.success("Δεν βρέθηκαν συγκρούσεις εντός της ίδιας τάξης.")
-            else:
-                st.dataframe(conflict_students.sort_values(["ΤΜΗΜΑ","ΟΝΟΜΑ"]), use_container_width=True)
-
-        except Exception as e:
-            traceback.print_exc()
-            _show_distribution_error(e)
+        st.subheader("⚠️ Μαθητές με σύγκρουση στην ίδια τάξη")
+        counts, names = compute_conflict_counts_and_names(used_df)
+        conflict_students = used_df.copy()
+        conflict_students["ΣΥΓΚΡΟΥΣΗ_ΠΛΗΘΟΣ"] = counts.astype(int)
+        conflict_students["ΣΥΓΚΡΟΥΣΗ_ΟΝΟΜΑ"] = names
+        conflict_students = conflict_students.loc[conflict_students["ΣΥΓΚΡΟΥΣΗ_ΠΛΗΘΟΣ"] > 0, ["ΟΝΟΜΑ","ΤΜΗΜΑ","ΣΥΓΚΡΟΥΣΗ_ΠΛΗΘΟΣ","ΣΥΓΚΡΟΥΣΗ_ΟΝΟΜΑ"]]
+        if conflict_students.empty:
+            st.success("Δεν βρέθηκαν συγκρούσεις εντός της ίδιας τάξης.")
+        else:
+            st.dataframe(conflict_students.sort_values(["ΤΜΗΜΑ","ΟΝΟΜΑ"]), use_container_width=True)
 
 st.divider()
 
@@ -1082,52 +916,6 @@ if st.session_state.get("last_final_path"):
                 st.info(f"📂 Source: {Path(input_source).name}")
                 st.info(f"📂 Template: {Path(template_path).name}")
                 
-                source_df_check = pd.read_excel(input_source, sheet_name=0)
-                if "ΟΝΟΜΑ" not in source_df_check.columns:
-                    raise ValueError("Λείπει η στήλη ΟΝΟΜΑ από το αρχικό αρχείο.")
-
-                source_names_check = [
-                    _canonical_student_name(x)
-                    for x in source_df_check["ΟΝΟΜΑ"].dropna().tolist()
-                    if _canonical_student_name(x)
-                ]
-                template_raw_names = _collect_names_from_class_workbook(template_path)
-                template_names_check = [
-                    _canonical_student_name(x)
-                    for x in template_raw_names
-                    if _canonical_student_name(x)
-                ]
-
-                source_set_check = set(source_names_check)
-                template_set_check = set(template_names_check)
-                original_by_canon_check = {
-                    _canonical_student_name(x): str(x).strip()
-                    for x in source_df_check["ΟΝΟΜΑ"].dropna().tolist()
-                }
-                missing_before_step8 = [
-                    original_by_canon_check.get(x, x)
-                    for x in sorted(source_set_check - template_set_check)
-                ]
-                duplicate_before_step8 = sorted({
-                    x for x in template_names_check
-                    if template_names_check.count(x) > 1
-                })
-
-                if (
-                    len(template_names_check) != len(source_names_check)
-                    or source_set_check != template_set_check
-                    or duplicate_before_step8
-                ):
-                    _clear_distribution_state()
-                    missing_text = ", ".join(missing_before_step8) or "—"
-                    st.error(
-                        "Το Βήμα 8 ακυρώθηκε: το αρχείο Βήματος 7 δεν είναι πλήρες. "
-                        f"Βρέθηκαν {len(template_names_check)} από "
-                        f"{len(source_names_check)} μαθητές. "
-                        f"Ατοποθέτητοι: {missing_text}."
-                    )
-                    st.stop()
-
                 # Load step8 module
                 s8 = _load_module("step8_fixed_final", ROOT / "step8_fixed_final.py")
                 

@@ -29,6 +29,37 @@ def norm_yesno(val: object) -> str:
     s = str(val).strip().upper()
     return "Ν" if s in {"Ν","ΝΑΙ","YES","TRUE","1","Y","Τ","ΑΙΣ","NAI"} else "Ο"
 
+def norm_behavior(val: object) -> str:
+    """
+    Κανονικοποίηση της στήλης ΖΩΗΡΟΣ.
+
+    Ο  = χωρίς αυξημένη συμπεριφορική ανάγκη
+    Ν1 = ηπιότερη ανάγκη υποστήριξης χωρίς συνοδό
+    Ν  = εντονότερη ανάγκη υποστήριξης χωρίς συνοδό
+    """
+    s = str(val).strip().upper()
+    aliases = {
+        "": "Ο", "NAN": "Ο", "NONE": "Ο",
+        "O": "Ο", "ΟΧΙ": "Ο", "NO": "Ο", "FALSE": "Ο", "0": "Ο",
+        "N1": "Ν1", "Ν1": "Ν1",
+        "N": "Ν", "ΝΑΙ": "Ν", "YES": "Ν", "TRUE": "Ν", "1": "Ν",
+        "Y": "Ν", "Τ": "Ν", "ΑΙΣ": "Ν", "NAI": "Ν",
+    }
+    if s not in aliases:
+        raise ValueError(
+            f"Μη έγκυρη τιμή στη στήλη ΖΩΗΡΟΣ: {val!r}. "
+            "Επιτρέπονται μόνο Ο, Ν1 ή Ν."
+        )
+    return aliases[s]
+
+def behavior_weight(val: object) -> int:
+    """Εσωτερικό βάρος κατανομής: Ο=0, Ν1=1, Ν=2."""
+    return {"Ο": 0, "Ν1": 1, "Ν": 2}[norm_behavior(val)]
+
+def behavior_positive(val: object) -> bool:
+    """True για Ν1 ή Ν. Χρησιμοποιείται σε συγκεντρωτικά στατιστικά/ελέγχους."""
+    return norm_behavior(val) in {"Ν1", "Ν"}
+
 def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     rename = {}
@@ -43,7 +74,9 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     if rename:
         df = df.rename(columns=rename)
     # Value normalization
-    for col in ["ΖΩΗΡΟΣ","ΙΔΙΑΙΤΕΡΟΤΗΤΑ","ΠΑΙΔΙ_ΕΚΠΑΙΔΕΥΤΙΚΟΥ","ΚΑΛΗ_ΓΝΩΣΗ_ΕΛΛΗΝΙΚΩΝ"]:
+    if "ΖΩΗΡΟΣ" in df.columns:
+        df["ΖΩΗΡΟΣ"] = df["ΖΩΗΡΟΣ"].map(norm_behavior)
+    for col in ["ΙΔΙΑΙΤΕΡΟΤΗΤΑ","ΠΑΙΔΙ_ΕΚΠΑΙΔΕΥΤΙΚΟΥ","ΚΑΛΗ_ΓΝΩΣΗ_ΕΛΛΗΝΙΚΩΝ"]:
         if col in df.columns:
             df[col] = df[col].map(norm_yesno)
     if "ΟΝΟΜΑ" in df.columns:
@@ -79,7 +112,7 @@ def scope_step2(df: pd.DataFrame, step1_col: str) -> Set[str]:
     s = set()
     for _, r in df.iterrows():
         placed = pd.notna(r.get(step1_col))
-        z = str(r.get("ΖΩΗΡΟΣ","")).strip()=="Ν"
+        z = behavior_positive(r.get("ΖΩΗΡΟΣ",""))
         i = str(r.get("ΙΔΙΑΙΤΕΡΟΤΗΤΑ","")).strip()=="Ν"
         pk = str(r.get("ΠΑΙΔΙ_ΕΚΠΑΙΔΕΥΤΙΚΟΥ","")).strip()=="Ν"
         if (not placed and (z or i)) or (placed and pk):

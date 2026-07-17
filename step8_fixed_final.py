@@ -390,10 +390,15 @@ class UnifiedProcessor:
         self._create_single_sheet(workbook, all_students, processed)
     
     def _is_student_locked(self, student: StudentData) -> bool:
-        """Έλεγχος αν μαθητής είναι locked."""
-        return (student.calm == 'Ν' or 
-                student.teacher_child == 'Ν' or 
-                student.special_needs == 'Ν')
+        """Κλειδώνει Ν1 και Ν, καθώς και παιδιά εκπαιδευτικών/ιδιαιτερότητες."""
+        behavior = str(student.calm).strip().upper()
+        teacher_child = str(student.teacher_child).strip().upper()
+        special_needs = str(student.special_needs).strip().upper()
+        return (
+            behavior in {"Ν1", "Ν"}
+            or teacher_child == "Ν"
+            or special_needs == "Ν"
+        )
     
     def _determine_category(self, gender_a: str, greek_a: str, gender_b: str, greek_b: str) -> str:
         """Καθορισμός κατηγορίας δυάδας."""
