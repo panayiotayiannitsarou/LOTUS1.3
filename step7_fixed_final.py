@@ -198,6 +198,17 @@ def _boys_filter(row) -> bool:
 def _girls_filter(row) -> bool:
     return _norm_str(row.get("ΦΥΛΟ")) == "Κ"
 
+def _behav_N_filter(row) -> bool:
+    """True μόνο για ΖΩΗΡΟΣ=Ν (η πιο έντονη κατηγορία)."""
+    return _norm_str(row.get("ΖΩΗΡΟΣ")) == "Ν"
+
+def _behav_NN1_filter(row) -> bool:
+    """True για ΖΩΗΡΟΣ∈{Ν1,Ν} (οποιαδήποτε συμπεριφορική ένδειξη)."""
+    return _norm_str(row.get("ΖΩΗΡΟΣ")) in {"Ν1", "Ν"}
+
+def _idiait_filter(row) -> bool:
+    return _is_yes(row.get("ΙΔΙΑΙΤΕΡΟΤΗΤΑ"))
+
 def _good_greek_filter(row) -> bool:
     """True αν έχει 'καλή γνώση' σύμφωνα με ΟΠΟΙΑ στήλη υπάρχει."""
     if "ΚΑΛΗ_ΓΝΩΣΗ_ΕΛΛΗΝΙΚΩΝ" in row:
@@ -207,6 +218,16 @@ def _good_greek_filter(row) -> bool:
         v = _norm_str(row.get("ΓΝΩΣΗ_ΕΛΛΗΝΙΚΩΝ"))
         return v in {"ΚΑΛΗ", "Ν", "GOOD"}
     return False
+
+def _weighted_behavior_counts(df: pd.DataFrame, scenario_col: str) -> Dict[str, int]:
+    """Σταθμισμένο συμπεριφορικό φορτίο ανά τμήμα: Ο=0, Ν1=1, Ν=2."""
+    labels = sorted([c for c in df[scenario_col].dropna().astype(str).unique() if re.match(r"^Α\d+$", str(c))])
+    res = {lab: 0 for lab in labels}
+    for _, r in df.iterrows():
+        cl = r.get(scenario_col)
+        if pd.notna(cl) and str(cl) in res:
+            res[str(cl)] += _behavior_weight(r.get("ΖΩΗΡΟΣ"))
+    return res
 
 def _pairwise_differences_sum(counts: Dict[str, int]) -> int:
     """Άθροισμα διαφορών όλων των ζευγαριών (για tie-breaking)."""
@@ -330,7 +351,27 @@ def score_one_scenario(df: pd.DataFrame, scenario_col: str, num_classes: Optiona
     total_greek_diff = _pairwise_differences_sum(good_counts)  # για tie-breaking
     greek_penalty = _pairwise_penalty(good_counts, free=2, weight=1)
 
-    # 4) Παιδαγωγικές συγκρούσεις (ΖΩΗΡΟΣ/ΙΔΙΑΙΤΕΡΟΤΗΤΑ) — penalty, όχι hard constraint
+    # 3β) Ιεραρχική ισοκατανομή ΖΩΗΡΟΣ/ΙΔΙΑΙΤΕΡΟΤΗΤΑ (4 επίπεδα προτεραιότητας):
+    #     N (πλήθος Ν) > NN1 (πλήθος Ν1+Ν) > Z (σταθμισμένο φορτίο) > I (Ιδιαιτερότητα).
+    #     Τα βάρη είναι σκόπιμα διαχωρισμένα σε τάξεις μεγέθους ώστε καμία βελτίωση σε
+    #     χαμηλότερο επίπεδο να μην μπορεί να "αγοράσει" παραβίαση σε υψηλότερο, υπό
+    #     ρεαλιστικά μεγέθη τμήματος — δεν είναι αυστηρά λεξικογραφικό, αλλά πρακτικά
+    #     ισοδύναμο γι' αυτό το εύρος τιμών.
+    behavN_counts = _counts_per_class(df, scenario_col, label_filter=_behav_N_filter)
+    behavN_penalty = _pairwise_penalty(behavN_counts, free=1, weight=50)
+
+    behavNN1_counts = _counts_per_class(df, scenario_col, label_filter=_behav_NN1_filter)
+    behavNN1_penalty = _pairwise_penalty(behavNN1_counts, free=1, weight=20)
+
+    behavZ_counts = _weighted_behavior_counts(df, scenario_col)
+    behavZ_penalty = _pairwise_penalty(behavZ_counts, free=1, weight=8)
+
+    idiait_counts = _counts_per_class(df, scenario_col, label_filter=_idiait_filter)
+    idiait_count_penalty = _pairwise_penalty(idiait_counts, free=1, weight=3)
+
+    behavior_hierarchy_penalty = behavN_penalty + behavNN1_penalty + behavZ_penalty + idiait_count_penalty
+
+    # 4) Παιδαγωγικές συγκρούσεις συνύπαρξης (ΖΩΗΡΟΣ/ΙΔΙΑΙΤΕΡΟΤΗΤΑ σε ζεύγη) — penalty, όχι hard constraint
     conflict_penalty = _all_conflicts_sum(df, scenario_col)
 
     # 4β) Δηλωμένες/εξωτερικές συγκρούσεις από ΣΥΓΚΡΟΥΣΗ — HARD CONSTRAINT
@@ -340,7 +381,8 @@ def score_one_scenario(df: pd.DataFrame, scenario_col: str, num_classes: Optiona
     broken = _broken_friendships_count(df, scenario_col, critical_pairs, count_unassigned_as_broken)
     broken_friendships_penalty = 5 * broken
 
-    total = population_penalty + gender_penalty + greek_penalty + conflict_penalty + broken_friendships_penalty
+    total = (population_penalty + gender_penalty + greek_penalty
+             + behavior_hierarchy_penalty + conflict_penalty + broken_friendships_penalty)
 
     return {
         "scenario_col": scenario_col,
@@ -348,6 +390,15 @@ def score_one_scenario(df: pd.DataFrame, scenario_col: str, num_classes: Optiona
         "population_counts": pop_counts,
         "boys_counts": boys_counts,
         "girls_counts": girls_counts,
+        "behavN_counts": behavN_counts,
+        "behavN_penalty": behavN_penalty,
+        "behavNN1_counts": behavNN1_counts,
+        "behavNN1_penalty": behavNN1_penalty,
+        "behavZ_counts": behavZ_counts,
+        "behavZ_penalty": behavZ_penalty,
+        "idiait_counts": idiait_counts,
+        "idiait_count_penalty": idiait_count_penalty,
+        "behavior_hierarchy_penalty": behavior_hierarchy_penalty,
         "good_greek_counts": good_counts,
         # Διαφορές για tie-breaking
         "diff_population": int(total_pop_diff),

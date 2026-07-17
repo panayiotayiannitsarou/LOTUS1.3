@@ -120,42 +120,70 @@ def _broken_mutual_pairs(df: pd.DataFrame, col: str, scope: Set[str]) -> int:
     }
     return sum(1 for a, b in pairs if name2class.get(a) != name2class.get(b))
 
-def _compute_targets_global(df: pd.DataFrame, step1_col: str, class_labels: List[str]) -> Dict[str, Dict[str, int]]:
-    """Ισορροπία συμπεριφορικού φορτίου: Ο=0, Ν1=1, Ν=2."""
-    Z_step1 = {cl: 0 for cl in class_labels}
-    I_step1 = {cl: 0 for cl in class_labels}
-    Z_total_step1 = 0
-    I_total_step1 = 0
+def _compute_targets_global(
+    df: pd.DataFrame,
+    step1_col: str,
+    class_labels: List[str],
+) -> Dict[str, Dict[str, int]]:
+    """
+    Ιεραρχική εξισορρόπηση:
+    1. πλήθος Ν,
+    2. συνολικό πλήθος Ν1+Ν,
+    3. σταθμισμένο φορτίο Ο=0, Ν1=1, Ν=2,
+    4. πλήθος ΙΔΙΑΙΤΕΡΟΤΗΤΑ=Ν.
+    """
+    k = len(class_labels)
+
+    n_step1 = {cl: 0 for cl in class_labels}
+    p_step1 = {cl: 0 for cl in class_labels}
+    z_step1 = {cl: 0 for cl in class_labels}
+    i_step1 = {cl: 0 for cl in class_labels}
+
+    totals = {"N": 0, "P": 0, "Z": 0, "I": 0}
 
     for _, r in df.iterrows():
         cl = r.get(step1_col)
-        z = behavior_weight(r.get("ΖΩΗΡΟΣ", ""))
-        i = str(r.get("ΙΔΙΑΙΤΕΡΟΤΗΤΑ", "")).strip() == "Ν"
-        if not pd.isna(cl):
-            cl = str(cl)
-            if cl in Z_step1:
-                Z_step1[cl] += z
-                Z_total_step1 += z
-                if i:
-                    I_step1[cl] += 1
-                    I_total_step1 += 1
+        behavior = str(r.get("ΖΩΗΡΟΣ", "")).strip().upper()
+        n_value = int(behavior == "Ν")
+        p_value = int(behavior in {"Ν1", "Ν"})
+        z_value = behavior_weight(behavior)
+        i_value = int(str(r.get("ΙΔΙΑΙΤΕΡΟΤΗΤΑ", "")).strip().upper() == "Ν")
 
-    to_place = df[pd.isna(df[step1_col])]
-    Z_to_place = int(to_place["ΖΩΗΡΟΣ"].map(behavior_weight).sum())
-    I_to_place = int((to_place["ΙΔΙΑΙΤΕΡΟΤΗΤΑ"].astype(str).str.strip() == "Ν").sum())
+        if pd.notna(cl):
+            cl = str(cl).strip()
+            if cl in class_labels:
+                n_step1[cl] += n_value
+                p_step1[cl] += p_value
+                z_step1[cl] += z_value
+                i_step1[cl] += i_value
+                totals["N"] += n_value
+                totals["P"] += p_value
+                totals["Z"] += z_value
+                totals["I"] += i_value
 
-    Z_final_total = Z_total_step1 + Z_to_place
-    I_final_total = I_total_step1 + I_to_place
+    to_place = df[pd.isna(df[step1_col])].copy()
+    behavior = to_place["ΖΩΗΡΟΣ"].astype(str).str.strip().str.upper()
 
-    def _qmax(total):
-        q, r = divmod(total, len(class_labels))
-        return {"q": q, "max": q + (1 if r > 0 else 0)}
+    totals["N"] += int((behavior == "Ν").sum())
+    totals["P"] += int(behavior.isin(["Ν1", "Ν"]).sum())
+    totals["Z"] += int(to_place["ΖΩΗΡΟΣ"].map(behavior_weight).sum())
+    totals["I"] += int(
+        (to_place["ΙΔΙΑΙΤΕΡΟΤΗΤΑ"].astype(str).str.strip().str.upper() == "Ν").sum()
+    )
+
+    def qmax(total: int) -> Dict[str, int]:
+        q, r = divmod(int(total), k)
+        return {"q": q, "max": q + (1 if r else 0)}
 
     return {
-        "Z": _qmax(Z_final_total),
-        "I": _qmax(I_final_total),
-        "Z_step1": Z_step1,
-        "I_step1": I_step1,
+        "N": qmax(totals["N"]),
+        "P": qmax(totals["P"]),
+        "Z": qmax(totals["Z"]),
+        "I": qmax(totals["I"]),
+        "N_step1": n_step1,
+        "P_step1": p_step1,
+        "Z_step1": z_step1,
+        "I_step1": i_step1,
     }
 
 def _prereject(assign_map, next_name, next_cl, df, step1_col, class_labels, targets, conflict_pairs=None) -> bool:
@@ -270,6 +298,14 @@ def step2_apply_FIXED_v3(
         n: behavior_weight(rows_by_name[n].get("ΖΩΗΡΟΣ", ""))
         for n in names
     }
+    n_flag = {
+        n: str(rows_by_name[n].get("ΖΩΗΡΟΣ", "")).strip().upper() == "Ν"
+        for n in names
+    }
+    p_flag = {
+        n: str(rows_by_name[n].get("ΖΩΗΡΟΣ", "")).strip().upper() in {"Ν1", "Ν"}
+        for n in names
+    }
     i_flag = {
         n: str(rows_by_name[n].get("ΙΔΙΑΙΤΕΡΟΤΗΤΑ", "")).strip() == "Ν"
         for n in names
@@ -367,8 +403,9 @@ def step2_apply_FIXED_v3(
     to_place_sorted = sorted(
         to_place,
         key=lambda n: (
-            -int(z_flag[n] > 0 and i_flag[n]),
-            -i_flag[n],
+            -int(n_flag[n]),
+            -int(p_flag[n]),
+            -int(i_flag[n]),
             -z_flag[n],
             -deg(n),
             n,
@@ -377,13 +414,19 @@ def step2_apply_FIXED_v3(
 
     # Suffix counts για exact feasibility pruning.
     m = len(to_place_sorted)
+    rem_n = [0] * (m + 1)
+    rem_p = [0] * (m + 1)
     rem_z = [0] * (m + 1)
     rem_i = [0] * (m + 1)
     for idx in range(m - 1, -1, -1):
-        n = to_place_sorted[idx]
-        rem_z[idx] = rem_z[idx + 1] + z_flag[n]
-        rem_i[idx] = rem_i[idx + 1] + int(i_flag[n])
+        name = to_place_sorted[idx]
+        rem_n[idx] = rem_n[idx + 1] + int(n_flag[name])
+        rem_p[idx] = rem_p[idx + 1] + int(p_flag[name])
+        rem_z[idx] = rem_z[idx + 1] + z_flag[name]
+        rem_i[idx] = rem_i[idx + 1] + int(i_flag[name])
 
+    n_counts = targets["N_step1"].copy()
+    p_counts = targets["P_step1"].copy()
     z_counts = targets["Z_step1"].copy()
     i_counts = targets["I_step1"].copy()
     assign: Dict[str, str] = {}
@@ -397,7 +440,7 @@ def step2_apply_FIXED_v3(
 
     # Κρατάμε μικρό pool από τις καλύτερες πλήρεις λύσεις, όχι εκατομμύρια DataFrames.
     pool_limit = max(int(candidate_pool_size), int(max_results), 10)
-    pool: List[Tuple[Tuple[int, int, int, int], Dict[str, str], int, int, int, int]] = []
+    pool: List[Tuple[Tuple[int, ...], Dict[str, str], int, int, int, int]] = []
     nodes_visited = 0
     complete_solutions = 0
     search_stopped_early = False
@@ -410,11 +453,26 @@ def step2_apply_FIXED_v3(
         class_of.update(assign)
         return sum(1 for a, b in mutual_pairs if class_of.get(a) != class_of.get(b))
 
-    def _rank(ped_cnt: int, broken: int, total: int) -> Tuple[int, int, int, int]:
-        # Ακριβώς η τελική λογική της παλιάς έκδοσης.
+    def _spread(counts: Dict[str, int]) -> int:
+        values = list(counts.values())
+        return int(max(values) - min(values)) if values else 0
+
+    def _rank(ped_cnt: int, broken: int, total: int) -> Tuple[int, ...]:
+        """
+        Ιεραρχική κατάταξη ακόμη και όταν έχει ενεργοποιηθεί χαλάρωση:
+        Ν -> Ν1+Ν -> βάρος -> ιδιαιτερότητα -> παιδαγωγικές ποινές/φιλίες.
+        """
+        balance_rank = (
+            _spread(n_counts),
+            _spread(p_counts),
+            _spread(z_counts),
+            _spread(i_counts),
+        )
         if ped_cnt == 0:
-            return (0, broken, total, ped_cnt)
-        return (1, total, broken, ped_cnt)
+            quality_rank = (0, broken, total, ped_cnt)
+        else:
+            quality_rank = (1, total, broken, ped_cnt)
+        return balance_rank + quality_rank
 
     def _store_solution(ped_cnt: int, conf_sum: int) -> None:
         nonlocal complete_solutions
@@ -428,28 +486,36 @@ def step2_apply_FIXED_v3(
             del pool[pool_limit:]
 
     def _targets_still_reachable(next_i: int) -> bool:
-        """True αν οι υπόλοιποι μαθητές μπορούν ακόμη να καλύψουν όλα τα q/max."""
-        rz = rem_z[next_i]
-        ri = rem_i[next_i]
+        remaining = {
+            "N": rem_n[next_i],
+            "P": rem_p[next_i],
+            "Z": rem_z[next_i],
+            "I": rem_i[next_i],
+        }
+        counts = {
+            "N": n_counts,
+            "P": p_counts,
+            "Z": z_counts,
+            "I": i_counts,
+        }
+
         for cl in class_labels:
-            if z_counts[cl] > targets["Z"]["max"]:
-                return False
-            if i_counts[cl] > targets["I"]["max"]:
-                return False
-            # Ακόμη κι αν ΟΛΟΙ οι υπόλοιποι Ζ/I πάνε εδώ, φτάνουμε το ελάχιστο;
-            if z_counts[cl] + rz < targets["Z"]["q"]:
-                return False
-            if i_counts[cl] + ri < targets["I"]["q"]:
-                return False
+            for key in active_hard_keys:
+                current = counts[key][cl]
+                if current > targets[key]["max"]:
+                    return False
+                if current + remaining[key] < targets[key]["q"]:
+                    return False
         return True
 
     def _class_order(name: str) -> List[str]:
-        """Δοκιμάζει πρώτα τα τμήματα με μεγαλύτερη ανάγκη στις κατηγορίες του μαθητή."""
         def key(cl: str):
-            z_need = targets["Z"]["q"] - z_counts[cl] if z_flag[name] > 0 else 0
+            n_need = targets["N"]["q"] - n_counts[cl] if n_flag[name] else 0
+            p_need = targets["P"]["q"] - p_counts[cl] if p_flag[name] else 0
+            z_need = targets["Z"]["q"] - z_counts[cl] if z_flag[name] else 0
             i_need = targets["I"]["q"] - i_counts[cl] if i_flag[name] else 0
-            load = len(members_by_class[cl])
-            return (-(z_need + i_need), load, cl)
+            return (-n_need, -p_need, -z_need, -i_need, len(members_by_class[cl]), cl)
+
         return sorted(class_labels, key=key)
 
     def backtrack(i: int, ped_cnt: int, conf_sum: int) -> None:
@@ -468,9 +534,16 @@ def step2_apply_FIXED_v3(
 
         if i == m:
             for cl in class_labels:
-                if not (targets["Z"]["q"] <= z_counts[cl] <= targets["Z"]["max"]):
-                    return
-                if not (targets["I"]["q"] <= i_counts[cl] <= targets["I"]["max"]):
+                values = {
+                    "N": n_counts[cl],
+                    "P": p_counts[cl],
+                    "Z": z_counts[cl],
+                    "I": i_counts[cl],
+                }
+                if any(
+                    not (targets[key]["q"] <= values[key] <= targets[key]["max"])
+                    for key in active_hard_keys
+                ):
                     return
             # Αποφυγή εκφυλιστικής λύσης όπου όλοι οι νέοι μπαίνουν στο ίδιο τμήμα.
             if m and len(set(assign.values())) == 1:
@@ -484,9 +557,13 @@ def step2_apply_FIXED_v3(
             if any(member in conflict_adj.get(name, ()) for member in members_by_class[cl]):
                 continue
 
+            new_n = n_counts[cl] + int(n_flag[name])
+            new_p = p_counts[cl] + int(p_flag[name])
             new_z = z_counts[cl] + z_flag[name]
             new_i = i_counts[cl] + int(i_flag[name])
-            if new_z > targets["Z"]["max"] or new_i > targets["I"]["max"]:
+
+            proposed = {"N": new_n, "P": new_p, "Z": new_z, "I": new_i}
+            if any(proposed[key] > targets[key]["max"] for key in active_hard_keys):
                 continue
 
             add_conf = 0
@@ -499,6 +576,8 @@ def step2_apply_FIXED_v3(
 
             assign[name] = cl
             members_by_class[cl].append(name)
+            n_counts[cl] = new_n
+            p_counts[cl] = new_p
             z_counts[cl] = new_z
             i_counts[cl] = new_i
 
@@ -506,6 +585,8 @@ def step2_apply_FIXED_v3(
 
             i_counts[cl] -= int(i_flag[name])
             z_counts[cl] -= z_flag[name]
+            p_counts[cl] -= int(p_flag[name])
+            n_counts[cl] -= int(n_flag[name])
             members_by_class[cl].pop()
             del assign[name]
 
@@ -524,10 +605,57 @@ def step2_apply_FIXED_v3(
                 if p > 0:
                     base_ped += 1
 
-    # Δεν ξεκινά η δαπανηρή αναζήτηση όταν το εισερχόμενο Step 1 είναι ήδη
-    # ασύμβατο με hard constraint που το Step 2 δεν επιτρέπεται να αλλάξει.
+    # Προοδευτική χαλάρωση. Οι δηλωμένες συγκρούσεις και η ισοκατανομή
+    # των εντονότερων ενδείξεων Ν παραμένουν πάντοτε hard constraints.
+    relaxation_profiles = [
+        ("STRICT_N_P_Z_I", ("N", "P", "Z", "I")),
+        ("RELAX_I", ("N", "P", "Z")),
+        ("RELAX_Z_I", ("N", "P")),
+        ("RELAX_P_Z_I", ("N",)),
+    ]
+
+    selected_relaxation_mode = None
+    selected_active_hard_keys: Tuple[str, ...] = tuple()
+    total_nodes_all_attempts = 0
+    total_complete_all_attempts = 0
+    any_search_stopped_early = False
+
+    # Δεν ξεκινά η αναζήτηση όταν το Step 1 παραβιάζει ήδη δηλωμένη σύγκρουση.
     if not fixed_conflict_pairs:
-        backtrack(0, base_ped, base_conf)
+        for relaxation_mode, profile_keys in relaxation_profiles:
+            active_hard_keys = profile_keys
+
+            # Πλήρης επαναφορά της κατάστασης πριν από κάθε προσπάθεια.
+            n_counts = targets["N_step1"].copy()
+            p_counts = targets["P_step1"].copy()
+            z_counts = targets["Z_step1"].copy()
+            i_counts = targets["I_step1"].copy()
+            assign.clear()
+
+            members_by_class = {cl: [] for cl in class_labels}
+            for fixed_name, fixed_cl in fixed_class.items():
+                members_by_class[fixed_cl].append(fixed_name)
+
+            pool.clear()
+            nodes_visited = 0
+            complete_solutions = 0
+            search_stopped_early = False
+
+            backtrack(0, base_ped, base_conf)
+
+            total_nodes_all_attempts += int(nodes_visited)
+            total_complete_all_attempts += int(complete_solutions)
+            any_search_stopped_early = any_search_stopped_early or bool(search_stopped_early)
+
+            if pool:
+                selected_relaxation_mode = relaxation_mode
+                selected_active_hard_keys = tuple(profile_keys)
+                break
+
+    # Τα συνολικά διαγνωστικά αφορούν όλες τις προσπάθειες χαλάρωσης.
+    nodes_visited = total_nodes_all_attempts
+    complete_solutions = total_complete_all_attempts
+    search_stopped_early = any_search_stopped_early
 
     base_id = _extract_step1_id(step1_col_name)
     final_col = f"ΒΗΜΑ2_ΣΕΝΑΡΙΟ_{base_id}"
@@ -561,6 +689,8 @@ def step2_apply_FIXED_v3(
             "complete_solutions": int(complete_solutions),
             "search_stopped_early": bool(search_stopped_early),
             "fixed_conflict_violations": 0,
+            "relaxation_mode": None,
+            "attempted_relaxation_profiles": [name for name, _ in relaxation_profiles],
             "infeasible_reason": (
                 "SEARCH_NODE_LIMIT" if search_stopped_early else "NO_FEASIBLE_STEP2_ASSIGNMENT"
             ),
@@ -581,6 +711,31 @@ def step2_apply_FIXED_v3(
         if _scenario_has_conflict(out, final_col):
             continue
 
+        behavior_out = out["ΖΩΗΡΟΣ"].astype(str).str.strip().str.upper()
+        class_out = out[final_col].astype(str).str.strip()
+        n_by_class = {
+            cl: int(((class_out == cl) & (behavior_out == "Ν")).sum())
+            for cl in class_labels
+        }
+        p_by_class = {
+            cl: int(((class_out == cl) & behavior_out.isin(["Ν1", "Ν"])).sum())
+            for cl in class_labels
+        }
+        z_by_class = {
+            cl: int(
+                behavior_out[class_out == cl]
+                .map({"Ο": 0, "Ν1": 1, "Ν": 2})
+                .fillna(0)
+                .sum()
+            )
+            for cl in class_labels
+        }
+        i_values_out = out["ΙΔΙΑΙΤΕΡΟΤΗΤΑ"].astype(str).str.strip().str.upper()
+        i_by_class = {
+            cl: int(((class_out == cl) & (i_values_out == "Ν")).sum())
+            for cl in class_labels
+        }
+
         results.append((f"option_{k}", out, {
             "ped_conflicts": int(ped_cnt),
             "broken": int(broken),
@@ -594,6 +749,12 @@ def step2_apply_FIXED_v3(
             "complete_solutions": int(complete_solutions),
             "candidate_pool_size": int(len(pool)),
             "search_stopped_early": bool(search_stopped_early),
+            "relaxation_mode": selected_relaxation_mode,
+            "active_hard_balance_constraints": list(selected_active_hard_keys),
+            "behavior_n_spread": _spread(n_by_class),
+            "behavior_positive_spread": _spread(p_by_class),
+            "behavior_weight_spread": _spread(z_by_class),
+            "special_needs_spread": _spread(i_by_class),
         }))
 
     # Θεωρητικά δεν πρέπει να συμβεί, αλλά δεν επιστρέφεται ποτέ υποψήφιο
