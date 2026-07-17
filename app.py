@@ -702,7 +702,8 @@ if xl is not None:
             return pd.Series([0]*len(df), index=df.index), pd.Series([""]*len(df), index=df.index)
         if "ΣΥΓΚΡΟΥΣΗ" not in df.columns:
             return pd.Series([0]*len(df), index=df.index), pd.Series([""]*len(df), index=df.index)
-        df = df.copy()
+        # Ασφαλής συνεχόμενος index μετά από φιλτράρισμα/συγχώνευση DataFrame.
+        df = df.copy().reset_index(drop=True)
         df["__C"] = df["ΟΝΟΜΑ"].map(_canon_name)
         cls = df["ΤΜΗΜΑ"].astype(str).str.strip()
         canon_names = list(df["__C"].astype(str).unique())
@@ -731,7 +732,8 @@ if xl is not None:
         fcol = next((c for c in ["ΦΙΛΟΙ","ΦΙΛΟΣ","ΦΙΛΙΑ"] if c in df.columns), None)
         if fcol is None or "ΟΝΟΜΑ" not in df.columns or "ΤΜΗΜΑ" not in df.columns:
             return pd.DataFrame(columns=["A","A_ΤΜΗΜΑ","B","B_ΤΜΗΜΑ"])
-        df = df.copy()
+        # Ασφαλής συνεχόμενος index μετά από φιλτράρισμα/συγχώνευση DataFrame.
+        df = df.copy().reset_index(drop=True)
         df["__C"] = df["ΟΝΟΜΑ"].map(_canon_name)
         name_to_original = dict(zip(df["__C"], df["ΟΝΟΜΑ"].astype(str)))
         class_by_name = dict(zip(df["__C"], df["ΤΜΗΜΑ"].astype(str).str.strip()))
@@ -742,7 +744,7 @@ if xl is not None:
             return [_canon_name(p) for p in parts]
         friends_map = {}
         for i, cn in enumerate(df["__C"]):
-            raw_targets = parse_list(df.loc[i, fcol])
+            raw_targets = parse_list(df.iloc[i][fcol])
             resolved = []
             for t in raw_targets:
                 if t in canon_names:
