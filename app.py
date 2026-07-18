@@ -557,14 +557,35 @@ if st.button("🚀 ΕΚΤΕΛΕΣΗ ΚΑΤΑΝΟΜΗΣ", type="primary", use_con
 
                     if rejected_incomplete_rows:
                         incomplete_df = pd.DataFrame(rejected_incomplete_rows)
-                        st.warning(
-                            f"⚠️ Απορρίφθηκαν "
-                            f"{incomplete_df[['ΦΥΛΛΟ','ΣΕΝΑΡΙΟ']].drop_duplicates().shape[0]} "
-                            f"από {total_scenario_cols} υποψήφια σενάρια επειδή "
-                            "δεν τοποθετήθηκαν όλοι οι μαθητές."
+                        _rejected_incomplete_count = int(
+                            incomplete_df[["ΦΥΛΛΟ", "ΣΕΝΑΡΙΟ"]]
+                            .drop_duplicates()
+                            .shape[0]
                         )
+
+                        if conflict_pairs:
+                            st.warning(
+                                f"⚠️ Απορρίφθηκαν {_rejected_incomplete_count} από "
+                                f"{total_scenario_cols} υποψήφια σενάρια, επειδή οι "
+                                "δηλωμένοι περιορισμοί μη συνύπαρξης δεν επέτρεψαν "
+                                "την τοποθέτηση όλων των μαθητών."
+                            )
+                            _incomplete_audit_title = (
+                                "📋 Audit μη εφικτών σεναρίων — συγκρούσεις και "
+                                "μη τοποθετημένοι μαθητές"
+                            )
+                        else:
+                            st.warning(
+                                f"⚠️ Απορρίφθηκαν {_rejected_incomplete_count} από "
+                                f"{total_scenario_cols} υποψήφια σενάρια επειδή "
+                                "δεν τοποθετήθηκαν όλοι οι μαθητές."
+                            )
+                            _incomplete_audit_title = (
+                                "📋 Audit ελλιπών σεναρίων — μη τοποθετημένοι μαθητές"
+                            )
+
                         with st.expander(
-                            "📋 Audit ελλιπών σεναρίων — μη τοποθετημένοι μαθητές",
+                            _incomplete_audit_title,
                             expanded=True,
                         ):
                             st.dataframe(incomplete_df, use_container_width=True)
@@ -592,12 +613,16 @@ if st.button("🚀 ΕΚΤΕΛΕΣΗ ΚΑΤΑΝΟΜΗΣ", type="primary", use_con
 
                         if total_scenario_cols == 0:
                             st.error("❌ Δεν βρέθηκαν σενάρια Βήματος 6 σε κανένα φύλλο.")
-                        elif rejected_conflict_rows:
+                        elif rejected_conflict_rows or (
+                            rejected_incomplete_rows and conflict_pairs
+                        ):
                             st.error(
-                                "❌ Δεν βρέθηκε έγκυρη κατανομή που να ικανοποιεί όλους "
-                                "τους δηλωμένους περιορισμούς μη συνύπαρξης. "
-                                "Δεν δημιουργήθηκε τελικό αποτέλεσμα και δεν διατηρήθηκε "
-                                "κανένα αποτέλεσμα προηγούμενης εκτέλεσης."
+                                "❌ Δεν βρέθηκε πλήρης και έγκυρη κατανομή που να "
+                                "ικανοποιεί όλους τους δηλωμένους περιορισμούς "
+                                "μη συνύπαρξης. Οι συγκρούσεις δεν επέτρεψαν την "
+                                "τοποθέτηση όλων των μαθητών. Δεν δημιουργήθηκε τελικό "
+                                "αποτέλεσμα και δεν διατηρήθηκε κανένα αποτέλεσμα "
+                                "προηγούμενης εκτέλεσης."
                             )
                         elif rejected_incomplete_rows:
                             st.error(
